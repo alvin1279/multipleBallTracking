@@ -7,20 +7,7 @@ from scipy.spatial import distance as dist
 from centroidClass import CentroidTracker
 from concurrent.futures import ThreadPoolExecutor
 
-class centroidMovmentInfo:
-    def __init__(self, objectID, centroid, maxHistory=5):
-        self.objectID = objectID
-        self.centroid = centroid
-        self.centroid_history = [centroid]
-        self.maxHistory = maxHistory
-        self.disappeared = 0
 
-# Initialize tracking-related variables
-speeds = {}
-last_speeds = defaultdict(lambda: [])
-
-# Speed smoothing window size
-SPEED_WINDOW_SIZE = 5
 
 # HSV range for mask
 lower = (26, 42, 167)
@@ -37,36 +24,6 @@ time_interval = 1 / fps
 # Initialize centroid tracker
 ct = CentroidTracker()
 
-# Function to draw tracking information on the frame
-def draw_tracking_info(frame, blank_image, cnts, centroid, objectID, objcVector, speed):
-    for c in cnts:
-        (x, y, w, h) = cv2.boundingRect(c)
-        if (int(x + w / 2), int(y + h / 2)) == centroid:
-            # Draw bounding box
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-            # Extend arrow endpoint based on angle
-            # Get the x and y components of the vector
-            vx, vy = objcVector  # The movement vector
-            # scale_factor = max(50, min(200, speeds[objectID] * 10))
-            scale_factor = 10
-
-            # Extend the line from the centroid using the vector
-            xext = int(centroid[0] +  vx)  
-            yext = int(centroid[1] +  vy)
-
-            # Draw arrow for movement direction
-            cv2.arrowedLine(frame, centroid, (xext, yext), (0, 255, 0), 2, tipLength=0.2)
-
-            # Display object ID and speed
-            cv2.putText(frame, f"ID {objectID} Speed: {speed:.2f} px/sec", 
-                        (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-
-            # Draw all this in blank image
-            cv2.rectangle(blank_image, (x, y), (x + w, y + h), (255, 255, 255), -1)
-            cv2.arrowedLine(blank_image, centroid, (xext, yext), (0, 255, 0), 2, tipLength=0.2)
-            cv2.putText(blank_image, f"ID {objectID} Speed: {speed:.2f} px/sec", 
-                        (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 # Function to draw tracking information on the frame (parallelized version)
 def draw_tracking_info_parallel(frame, blank_image, cnts, centroid, objectID, objcVector, speed):
     for c in cnts:
