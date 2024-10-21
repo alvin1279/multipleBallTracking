@@ -47,7 +47,8 @@ class CentroidTracker:
             distances = dist.cdist(objectCentroids,inputCentroids)
 
             # Find minimum distance pairs (objects to centroids)
-             
+            rows = distances.min(axis=1).argsort()
+            cols = distances.argmin(axis=1)[rows]
 
             # Mark matched objects and update their centroids
             usedRows = set()
