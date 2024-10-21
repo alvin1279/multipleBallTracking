@@ -7,6 +7,14 @@ import hsvMaskUtility as hlpr
 from scipy.spatial import distance as dist
 from centroidClass import CentroidTracker
 
+class centroidMovmentInfo:
+    def __init__(self, objectID, centroid, maxHistory=5):
+        self.objectID = objectID
+        self.centroid = centroid
+        self.centroid_history = [centroid]
+        self.maxHistory = maxHistory
+        self.disappeared = 0
+
 # Initialize tracking-related variables
 speeds = {}
 last_speeds = defaultdict(lambda: [])
@@ -33,7 +41,7 @@ def calculate_distance(point1, point2):
     return math.sqrt((point2[0] - point1[0]) ** 2 + (point2[1] - point1[1]) ** 2)
 
 # Function to draw tracking information on the frame
-def draw_tracking_info(frame, blank_image, cnts, centroid, objectID, angle_degrees, speeds):
+def draw_tracking_info(frame, blank_image, cnts, centroid, objectID, objcVector, speeds):
     for c in cnts:
         (x, y, w, h) = cv2.boundingRect(c)
         if (int(x + w / 2), int(y + h / 2)) == centroid:
@@ -41,8 +49,14 @@ def draw_tracking_info(frame, blank_image, cnts, centroid, objectID, angle_degre
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
             # Extend arrow endpoint based on angle
-            xext = int(centroid[0] + 100 * math.cos(math.radians(angle_degrees)))
-            yext = int(centroid[1] + 100 * math.sin(math.radians(angle_degrees)))
+            # Get the x and y components of the vector
+            vx, vy = objcVector  # The movement vector
+            # scale_factor = max(50, min(200, speeds[objectID] * 10))
+            scale_factor = 10
+
+            # Extend the line from the centroid using the vector
+            xext = int(centroid[0] +  vx)  
+            yext = int(centroid[1] +  vy)
 
             # Draw arrow for movement direction
             cv2.arrowedLine(frame, centroid, (xext, yext), (0, 255, 0), 2, tipLength=0.2)
@@ -89,17 +103,14 @@ while True:
 
     # Update the tracker with new centroids
     objects = ct.update(inputCentroids)
-
     # Process each tracked object
     for objectID, obj in ct.objects.items():
         centroid = obj.centroid
+        object_vector = obj.vector
         if len(obj.centroid_history) > 1:
             # Calculate displacement and speed
-            previous_centroids = obj.centroid_history[:-1]
-            # previous_centroid = obj.centroid_history[-2]
-            previous_centroid = tuple(map(lambda x: int(sum(x) / len(x)), zip(*previous_centroids)))
-
-            displacement = calculate_distance(previous_centroid, centroid)
+            delta_x,delta_y = object_vector
+            displacement = math.sqrt(delta_x**2+delta_y**2)
             time_interval = 1 / fps
             current_speed = displacement / time_interval
 
@@ -113,25 +124,12 @@ while True:
             if smoothed_speed < 30:  # Speed threshold to filter noise
                 smoothed_speed = 0
             speeds[objectID] = smoothed_speed
+        
 
-            # Calculate movement direction (angle)
-            delta_x = centroid[0] - previous_centroid[0]
-            delta_y = centroid[1] - previous_centroid[1]
-            if delta_x != 0 or delta_y != 0:
-                angle = math.atan2(delta_y, delta_x)
-                angle_degrees = math.degrees(angle)
-            else:
-                angle_degrees = 0
         else:
             speeds[objectID] = 0
-            angle_degrees = 0
-
-        # Normalize the angle to [0, 360)
-        if angle_degrees < 0:
-            angle_degrees += 360
-
         # Draw tracking information
-        draw_tracking_info(frame, blank_image, cnts, centroid, objectID, angle_degrees, speeds)
+        draw_tracking_info(frame, blank_image, cnts, centroid, objectID, object_vector, speeds)
 
     # Show frame
     cv2.imshow("Frame", frame)
