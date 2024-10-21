@@ -1,11 +1,11 @@
 import cv2
 import numpy as np
 import imutils
-import math
 from collections import defaultdict
 import hsvMaskUtility as hlpr
 from scipy.spatial import distance as dist
 from centroidClass import CentroidTracker
+from concurrent.futures import ThreadPoolExecutor
 
 class centroidMovmentInfo:
     def __init__(self, objectID, centroid, maxHistory=5):
@@ -32,16 +32,13 @@ if not vs.isOpened():
     raise IOError("Cannot open video file")
 
 fps = vs.get(cv2.CAP_PROP_FPS)
+time_interval = 1 / fps
 
 # Initialize centroid tracker
 ct = CentroidTracker()
 
-# Function to calculate Euclidean distance between two points
-def calculate_distance(point1, point2):
-    return math.sqrt((point2[0] - point1[0]) ** 2 + (point2[1] - point1[1]) ** 2)
-
 # Function to draw tracking information on the frame
-def draw_tracking_info(frame, blank_image, cnts, centroid, objectID, objcVector, speeds):
+def draw_tracking_info(frame, blank_image, cnts, centroid, objectID, objcVector, speed):
     for c in cnts:
         (x, y, w, h) = cv2.boundingRect(c)
         if (int(x + w / 2), int(y + h / 2)) == centroid:
@@ -62,14 +59,68 @@ def draw_tracking_info(frame, blank_image, cnts, centroid, objectID, objcVector,
             cv2.arrowedLine(frame, centroid, (xext, yext), (0, 255, 0), 2, tipLength=0.2)
 
             # Display object ID and speed
-            cv2.putText(frame, f"ID {objectID} Speed: {speeds[objectID]:.2f} px/sec", 
+            cv2.putText(frame, f"ID {objectID} Speed: {speed:.2f} px/sec", 
                         (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
             # Draw all this in blank image
             cv2.rectangle(blank_image, (x, y), (x + w, y + h), (255, 255, 255), -1)
             cv2.arrowedLine(blank_image, centroid, (xext, yext), (0, 255, 0), 2, tipLength=0.2)
-            cv2.putText(blank_image, f"ID {objectID} Speed: {speeds[objectID]:.2f} px/sec", 
+            cv2.putText(blank_image, f"ID {objectID} Speed: {speed:.2f} px/sec", 
                         (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+# Function to draw tracking information on the frame (parallelized version)
+def draw_tracking_info_parallel(frame, blank_image, cnts, centroid, objectID, objcVector, speed):
+    for c in cnts:
+        (x, y, w, h) = cv2.boundingRect(c)
+        if (int(x + w / 2), int(y + h / 2)) == centroid:
+            # Draw bounding box
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+            # Extend arrow endpoint based on angle
+            # Get the x and y components of the vector
+            vx, vy = objcVector  # The movement vector
+            scale_factor = 10
+
+            # Extend the line from the centroid using the vector
+            xext = int(centroid[0] + vx)
+            yext = int(centroid[1] + vy)
+
+            # Draw arrow for movement direction
+            cv2.arrowedLine(frame, centroid, (xext, yext), (0, 255, 0), 2, tipLength=0.2)
+
+            # Display object ID and speed
+            cv2.putText(frame, f"ID {objectID} Speed: {speed:.2f} px/sec", 
+                        (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+            # Draw all this in blank image
+            cv2.rectangle(blank_image, (x, y), (x + w, y + h), (255, 255, 255), -1)
+            cv2.arrowedLine(blank_image, centroid, (xext, yext), (0, 255, 0), 2, tipLength=0.2)
+            cv2.putText(blank_image, f"ID {objectID} Speed: {speed:.2f} px/sec", 
+                        (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+            
+# Function to process all tracked objects in parallel
+def process_tracked_objects(frame, blank_image, cnts, ct, time_interval):
+    # Use ThreadPoolExecutor for parallel processing of objects
+    with ThreadPoolExecutor() as executor:
+        futures = []
+        
+        # Create tasks for each object to draw tracking information
+        for objectID, obj in ct.objects.items():
+            centroid = obj.centroid
+            object_vector = obj.vector
+            displacement = obj.displacement
+            current_speed = 0
+            
+            if len(obj.centroid_history) > 1:            
+                current_speed = displacement / time_interval
+            else:
+                current_speed = 0
+
+            # Submit each task to the executor
+            futures.append(executor.submit(draw_tracking_info_parallel, frame, blank_image, cnts, centroid, objectID, object_vector, current_speed))
+        
+        # Wait for all tasks to finish
+        for future in futures:
+            future.result()  # This will block until the task is done
 
 # Main loop for video processing
 while True:
@@ -103,34 +154,7 @@ while True:
 
     # Update the tracker with new centroids
     objects = ct.update(inputCentroids)
-    # Process each tracked object
-    for objectID, obj in ct.objects.items():
-        centroid = obj.centroid
-        object_vector = obj.vector
-        if len(obj.centroid_history) > 1:
-            # Calculate displacement and speed
-            delta_x,delta_y = object_vector
-            displacement = math.sqrt(delta_x**2+delta_y**2)
-            time_interval = 1 / fps
-            current_speed = displacement / time_interval
-
-            # Add the current speed to the smoothing window
-            last_speeds[objectID].append(current_speed)
-            if len(last_speeds[objectID]) > SPEED_WINDOW_SIZE:
-                last_speeds[objectID].pop(0)
-
-            # Smoothed speed (moving average)
-            smoothed_speed = sum(last_speeds[objectID]) / len(last_speeds[objectID])
-            if smoothed_speed < 30:  # Speed threshold to filter noise
-                smoothed_speed = 0
-            speeds[objectID] = smoothed_speed
-        
-
-        else:
-            speeds[objectID] = 0
-        # Draw tracking information
-        draw_tracking_info(frame, blank_image, cnts, centroid, objectID, object_vector, speeds)
-
+    process_tracked_objects(frame,blank_image,cnts,ct,time_interval)
     # Show frame
     cv2.imshow("Frame", frame)
     cv2.imshow("blank_image", blank_image)
