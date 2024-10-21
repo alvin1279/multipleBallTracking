@@ -1,3 +1,5 @@
+import math
+
 class TrackedObject:
     def __init__(self, objectID, centroid, maxHistory=5):
         # Assign an ID to the object and initialize properties
@@ -11,6 +13,7 @@ class TrackedObject:
         self.direction = 0
         self.vector = (0, 0)
         self.vector_history = [(0, 0)]  # Store previous vectors
+        self.displacement_history = [0]
 
     def update_centroid(self, new_centroid):
         # Update the current centroid and maintain centroid history
@@ -19,7 +22,6 @@ class TrackedObject:
         self.centroid_history.append(new_centroid)
         if len(self.centroid_history) > self.maxHistory:
             self.centroid_history.pop(0)
-
 
     def mark_disappeared(self):
         # Increase the disappeared count for the object
@@ -33,11 +35,19 @@ class TrackedObject:
         # Update both vector and smooth it using vector history
         self.centroid = new_centroid
         self.update_vector(new_centroid)
+        self.update_displacement()
         self.update_centroid_average()
 
     def update_centroid_average(self):
         # Compute the average of the centroid history
         self.average_centroid = tuple(map(lambda x: int(sum(x) / len(x)), zip(*self.centroid_history)))
+    
+    def update_displacement(self):
+        delta_x,delta_y = self.vector
+        self.displacement = math.sqrt(delta_x**2+delta_y**2)
+        self.displacement_history.append(self.displacement )
+        if len(self.displacement_history) > self.maxHistory:
+            self.displacement_history.pop(0)
 
     def update_vector(self, new_centroid):
         # Calculate the x and y components of the vector
