@@ -1,7 +1,7 @@
+import concurrent.futures
 from collections import OrderedDict
 from scipy.spatial import distance as dist
 from TrackedObjectClass import TrackedObject
-        
 
 class CentroidTracker:
     def __init__(self, maxDisappeared=50, maxHistory=5):
@@ -52,21 +52,30 @@ class CentroidTracker:
             rows = distances.min(axis=1).argsort()
             cols = distances.argmin(axis=1)[rows]
 
+            # Find the smallest value in each row (min distances), and then sort rows by the min values
+            rows = distances.min(axis=1).argsort()
+            cols = distances.argmin(axis=1)[rows]
+
             usedRows = set()
             usedCols = set()
 
-            # Update the objects with their new centroids
-            for (row, col) in zip(rows, cols):
-                if row in usedRows or col in usedCols:
-                    continue
+            # Use ThreadPoolExecutor for parallel updating of objects
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                futures = []
+                for (row, col) in zip(rows, cols):
+                    if row in usedRows or col in usedCols:
+                        continue
 
-                objectID = objectIDs[row]
-                obj = self.objects[objectID]
-                obj.update_centroid(inputCentroids[col])
-                obj.reset_disappeared()
+                    objectID = objectIDs[row]
+                    obj = self.objects[objectID]
+                    futures.append(executor.submit(self.update_object, obj, inputCentroids[col]))
 
-                usedRows.add(row)
-                usedCols.add(col)
+                    usedRows.add(row)
+                    usedCols.add(col)
+
+                # Wait for all futures to complete
+                for future in futures:
+                    future.result()
 
             # Register new input centroids as new objects
             for col in range(len(inputCentroids)):
@@ -85,8 +94,12 @@ class CentroidTracker:
 
         return self.get_all_objects()
 
+    def update_object(self, obj, new_centroid):
+        # Update the object with its new centroid and movement
+        obj.update_centroid(new_centroid)
+        obj.reset_disappeared()  # Reset the disappearance count when the object is re-associated
+
     def get_all_objects(self):
         # Return current objects and their average centroids
         objects = {objectID: obj.centroid for objectID, obj in self.objects.items()}
-        centroids = [obj.centroid for obj in self.objects.values()]
         return objects
