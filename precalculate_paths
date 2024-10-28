@@ -1,0 +1,221 @@
+import cv2
+import numpy as np
+import time
+import json
+from concurrent.futures import ProcessPoolExecutor
+import struct
+
+
+# Define colors
+red = (0, 0, 255)
+blue = (255, 0, 0)
+green = (0, 255, 0)
+
+
+class Line:
+    def __init__(self, slope, intercept, end_point_index, start_point, distance):
+        self.slope = slope
+        self.intercept = intercept
+        self.end_point_index = end_point_index
+        self.start_point = start_point
+        self.distance = distance
+    def to_binary(self):
+        # Pack data in the order: slope, intercept, end_point_index, start_x, start_y, distance
+        return struct.pack('ffifff', self.slope, self.intercept, self.end_point_index,
+                        self.start_point[0], self.start_point[1], self.distance)
+
+    @staticmethod
+    def from_binary(data):
+        # Ensure the binary data has the expected length
+        expected_size = struct.calcsize('ffifff')
+        if len(data) != expected_size:
+            raise ValueError(f"Binary data length mismatch. Expected {expected_size} bytes, got {len(data)} bytes.")
+
+        # Unpack and create the Line object
+        try:
+            slope, intercept, end_point_index, start_x, start_y, distance = struct.unpack('ffifff', data)
+            return Line(slope, intercept, end_point_index, (start_x, start_y), distance)
+        except struct.error as e:
+            print(f"Error unpacking data: {e}")
+            print(f"Data received: {data}")
+            raise
+# Save points to binary
+def save_points_binary(points, filename):
+    with open(filename, 'wb') as f:
+        for x, y in points:
+            f.write(struct.pack('ii', x, y))
+
+# Load points from binary
+def load_points_binary(filename):
+    points = []
+    with open(filename, 'rb') as f:
+        while chunk := f.read(struct.calcsize('ii')):
+            points.append(struct.unpack('ii', chunk))
+    return points
+def generate_goal_line_points(start, end): 
+    return [(start[0], i) for i in range(start[1], end[1])]
+
+def generate_line_properties(point, goal_line_points):
+    line_properties = []
+    
+    # Compute the x_diff and steps for iterating goal_line_points
+    x_diff = max(abs(point[0] - goal_line_points[0][0]), 1)
+    steps = max(len(goal_line_points) / x_diff, 1)
+    
+    for i in range(0, len(goal_line_points), int(steps)):
+
+        
+        # Calculate distance from point to current goal line point
+        distance = np.linalg.norm(np.array(point) - np.array(goal_line_points[i]))
+        
+        # Calculate slope (m) and y-intercept (b)
+        dx = goal_line_points[i][0] - point[0]
+        dy = goal_line_points[i][1] - point[1]
+        
+        # Handle vertical lines by setting m to a large value
+        if dx == 0:
+            m = float('inf')  # Vertical line slope
+            b = point[0]  # For vertical line, intercept is x-coordinate
+        else:
+            m = dy / dx
+            b = point[1] - m * point[0]
+        
+        # Create a Line object and convert it to binary
+        line = Line(m, b, i, point, int(distance))
+        line_properties.append(line.to_binary())  # Store as binary
+
+    return line_properties
+def get_line_equations_for_point(all_chunks, point):
+    # Convert the point tuple to string format for the index
+    point_key = f"{point[0]},{point[1]}"
+    line_equations = []
+
+    for chunk_index, chunk_data in enumerate(all_chunks):
+        # Load the corresponding index for the chunk
+        index_filename = f"chunk_{chunk_index}_index.json"
+        try:
+            with open(index_filename, "r") as idx_file:
+                index = json.load(idx_file)
+        except FileNotFoundError:
+            print(f"Index file {index_filename} not found.")
+            continue
+
+        # Check if the point exists in the index
+        if point_key in index:
+            # Get all offsets from the index for this point
+            offsets = index[point_key]
+
+            # Read the binary data from the chunk using the offsets
+            record_size = struct.calcsize('ffifff')
+            for offset in offsets:
+                # Read the record starting from the offset
+                if offset * record_size < len(chunk_data):
+                    record = chunk_data[offset * record_size:(offset + 1) * record_size]
+                    if len(record) == record_size:
+                        # Unpack the record into Line object
+                        print(struct.unpack('ffifff', record))
+                        slope, intercept, end_point_index, start_x, start_y, distance = struct.unpack('ffifff', record)
+                        line_equations.append(Line(slope, intercept, end_point_index, (start_x, start_y), distance))
+
+    return line_equations
+
+def process_row_chunk(start_row, end_row, img_width, x_offset, chunk_index):
+    print(f"Processing chunk {chunk_index} from {start_row} to {end_row}")
+
+    # Load the goal line points from binary format
+    loaded_goal_line_points = load_points_binary('goal_line_points.bin')
+
+    line_equations_row = []
+    index = {}  # Dictionary to store indices of line equations for each point
+
+    for i in range(start_row, end_row):
+        line_equations = []
+        if i < x_offset:
+            line_equations_row.append(line_equations)
+            continue
+
+        for j in range(img_width):
+            point = (i, j)
+            line_properties = generate_line_properties(point, loaded_goal_line_points)  # Collect binary data
+            line_equations.extend(line_properties)
+
+            # Update index for the point
+            point_key = f"{point[0]},{point[1]}"
+            index[point_key] = index.get(point_key, []) + [len(line_properties) - 1]  # Append the index of the last line
+
+        line_equations_row.append(line_equations)
+    
+    print(f"Chunk {chunk_index} processed")
+
+    # Save the data to a binary file for this chunk
+    with open(f"chunk_{chunk_index}.bin", "wb") as f:  # Use a .bin extension for clarity
+        print(f"Saving chunk {chunk_index} to chunk_{chunk_index}.bin")
+        for line_data in line_equations_row:
+            f.write(b''.join(line_data))  # Write all properties in binary format
+
+    # Save the index as a JSON file
+    with open(f"chunk_{chunk_index}_index.json", "w") as idx_file:
+        json.dump(index, idx_file)
+
+    print(f"Chunk {chunk_index} saved to chunk_{chunk_index}.bin and index saved.")
+
+if __name__ == '__main__':
+    # Main script
+    img = np.zeros((500, 500, 3), np.uint8)
+    left_goal_start = (0, 200)
+    left_goal_end = (0, 300)
+
+    cv2.line(img, left_goal_start, left_goal_end, green, 5)
+
+    # Generate goal line points and save to binary file
+    goal_line_points = generate_goal_line_points(left_goal_start, left_goal_end)
+    # Save and load using either method
+    save_points_binary(goal_line_points, 'goal_line_points.bin')
+    print("Goal line points saved in binary format.")
+
+    img_height, img_width, _ = img.shape
+    x_offset = 30
+    num_processes = 6  # Adjust based on available CPU cores
+
+    start_time = time.time()
+
+    # Define row chunks for each process
+    rows_per_process = img_height // num_processes
+    row_chunks = [(i * rows_per_process, (i + 1) * rows_per_process) for i in range(num_processes)]
+    if row_chunks[-1][1] < img_height:
+        row_chunks[-1] = (row_chunks[-1][0], img_height)
+
+    # Use ProcessPoolExecutor for multiprocessing
+    with ProcessPoolExecutor(max_workers=num_processes) as executor:
+        futures = [executor.submit(process_row_chunk, start, end, img_width, x_offset, idx)
+                   for idx, (start, end) in enumerate(row_chunks)]
+        print('Waiting for all processes to complete...')
+        for future in futures:
+            future.result()  # Wait for completion of all processes
+        print('Process completed.')
+
+    end_time = time.time()
+    print("Matrix generation time:", end_time - start_time)
+
+    # Optionally, read the saved binary files back and combine them if needed
+    all_chunks = []
+    for i in range(num_processes):
+        with open(f"chunk_{i}.bin", "rb") as f:
+            all_chunks.append(f.read())  # Read binary data
+    # reconstruct line euqations from all chunks binary data
+    print(type(all_chunks))
+    point = (100, 100)  # Specify the point you want to retrieve
+    # Example usage
+    point = (100, 100)  # Specify the point you want to retrieve
+    line_for_point = get_line_equations_for_point(all_chunks, point)  # Assumes data is in chunk 0
+
+    if line_for_point:
+        print(f"Line equation for point {point}: Slope: {line_for_point.slope}, "
+            f"Intercept: {line_for_point.intercept}, Endpoint Index: {line_for_point.end_point_index}, "
+            f"Distance: {line_for_point.distance}")
+
+
+
+    cv2.imshow('image', img)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
